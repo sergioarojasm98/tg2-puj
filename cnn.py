@@ -1,4 +1,6 @@
 import os
+import io
+import sys
 import requests
 import configparser
 import traceback
@@ -8,6 +10,7 @@ from tensorflow.keras.layers import Dense, Dropout, Flatten
 from tensorflow.keras.layers import Conv2D, MaxPooling2D
 from tensorflow.keras.layers import BatchNormalization
 from tensorflow.keras.optimizers import RMSprop
+from tensorflow.keras.metrics import AUC, Precision, Recall
 from tensorflow.keras.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
@@ -20,7 +23,7 @@ import matplotlib.pyplot as plt
 # ======================== INICIO - TELEGRAM ========================= #
 
 config = configparser.ConfigParser()
-config.read("/home/srojas/Documentos/Stuff/config.ini")
+config.read("/home/srojas/tg2/Stuff/config.ini")
 apiToken = config.get("Telegram", "apiToken")
 chatID = config.get("Telegram", "chatID")
 
@@ -39,16 +42,18 @@ def send_telegram_message(message):
 
 strategy = tf.distribute.MirroredStrategy()
 print("Número de dispositivos: {}".format(strategy.num_replicas_in_sync))
-send_telegram_message("Número de dispositivos: {}".format(strategy.num_replicas_in_sync))
+send_telegram_message(
+    "Número de dispositivos: {}".format(strategy.num_replicas_in_sync)
+)
 BATCH_SIZE = 32 * strategy.num_replicas_in_sync  # Ajustando el tamaño de lote
 
 # ======================== FIN - MIRRORED STRATEGY ========================= #
 
 folder_paths = [
-    "/data/estudiantes/srojas/input-data",
-    "/data/estudiantes/srojas/output-lsb",
-    "/data/estudiantes/srojas/output-dct",
-    "/data/estudiantes/srojas/output-dwt",
+    "/HDDmedia/srojas/input-data",
+    "/HDDmedia/srojas/output-lsb",
+    "/HDDmedia/srojas/output-dct",
+    "/HDDmedia/srojas/output-dwt",
 ]
 
 labels = [0, 1, 1, 1]
@@ -64,6 +69,36 @@ for folder_path, label in zip(folder_paths, labels):
 train_paths, validation_paths, train_labels, validation_labels = train_test_split(
     all_image_paths, all_image_labels, test_size=0.2, random_state=42
 )
+
+
+class F1Score(tf.keras.metrics.Metric):
+    def __init__(self, name="f1_score", **kwargs):
+        super(F1Score, self).__init__(name=name, **kwargs)
+        self.precision = Precision()
+        self.recall = Recall()
+
+    def update_state(self, y_true, y_pred, sample_weight=None):
+        self.precision.update_state(y_true, y_pred, sample_weight)
+        self.recall.update_state(y_true, y_pred, sample_weight)
+
+    def reset_states(self):
+        self.precision.reset_states()
+        self.recall.reset_states()
+
+    def result(self):
+        precision = self.precision.result()
+        recall = self.recall.result()
+        return 2 * ((precision * recall) / (precision + recall + 1e-5))
+
+
+def get_model_summary(model):
+    stream = io.StringIO()
+    sys.stdout = stream
+    model.summary()
+    sys.stdout = sys.__stdout__  # Reset la salida estándar al valor por defecto
+    summary_string = stream.getvalue()
+    stream.close()
+    return summary_string
 
 
 def load_and_preprocess_image(path, label):
@@ -104,6 +139,17 @@ validation_dataset = (
 )
 
 
+class EarlyStoppingNotification(tf.keras.callbacks.Callback):
+    def __init__(self, early_stopping_callback, telegram_func):
+        super().__init__()
+        self.es_callback = early_stopping_callback
+        self.telegram_func = telegram_func
+
+    def on_epoch_end(self, epoch, logs=None):
+        if self.es_callback.stopped_epoch > 0:
+            self.telegram_func(f"EarlyStopping activado en la época: {epoch + 1}.")
+
+
 def send_epoch_notification(epoch, logs):
     message = f"[CRATOS] Fin de la época {epoch+1}\n"
     message += f"Pérdida: {logs['loss']:.4f}\n"
@@ -136,7 +182,15 @@ def plot_training_history(history):
     plt.legend(["Train", "Validation"], loc="upper left")
 
     plt.tight_layout()
-    plt.show()
+
+    script_name = os.path.basename(__file__).split(".")[
+        0
+    ]  # Obtén el nombre del script sin extensión
+    file_path = os.path.join("/home/srojas/tg2/Resultados/", f"{script_name}.png")
+    plt.savefig(file_path)
+
+    send_telegram_message(f"[CRATOS] Tu gráfica se guardó en {file_path}")
+    # plt.show()
 
 
 def main():
@@ -190,10 +244,17 @@ def main():
             )
 
             model_checkpoint = ModelCheckpoint(
-                "model-best.h5", verbose=1, save_best_only=True, save_weights_only=True
+                "/home/srojas/tg2/Stuff/model-best.h5",
+                verbose=1,
+                save_best_only=True,
+                save_weights_only=True,
             )
             epoch_notification_callback = LambdaCallback(
                 on_epoch_end=lambda epoch, logs: send_epoch_notification(epoch, logs)
+            )
+            early_stopping_notification = EarlyStoppingNotification(
+                early_stopping_callback=early_stopping,
+                telegram_func=send_telegram_message,
             )
             lr_scheduler = LearningRateScheduler(schedule)
 
@@ -202,13 +263,26 @@ def main():
                 model_checkpoint,
                 epoch_notification_callback,
                 lr_scheduler,
+                early_stopping_notification,
             ]
 
             optimizer = RMSprop(learning_rate=0.001)
 
             model.compile(
-                loss="binary_crossentropy", optimizer=optimizer, metrics=["accuracy"]
+                loss="binary_crossentropy",
+                optimizer=optimizer,
+                metrics=[
+                    "accuracy",
+                    AUC(name="auc"),
+                    Precision(name="precision"),
+                    Recall(name="recall"),
+                    F1Score(name="f1_score"),
+                ],
             )
+
+            model_summary = get_model_summary(model)
+            send_telegram_message(f"Model Summary:\n{model_summary}")
+
             model.summary()
 
             history = model.fit(
@@ -222,8 +296,8 @@ def main():
             plot_training_history(history)
         except Exception as e:
             error_message = str(e) + "\n\n" + traceback.format_exc()
-            send_telegram_message(f"Error during model training:\n{error_message}")
-            print(f"Error during model training:\n{error_message}")
+            send_telegram_message(f"Error durante el entrenamiento:\n{error_message}")
+            print(f"Error durante el entrenamiento:\n{error_message}")
 
     send_telegram_message(
         "[CRATOS] Tu programa {} ha terminado de ejecutarse.".format(
