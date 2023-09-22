@@ -10,13 +10,16 @@ from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, Flatten
 from tensorflow.keras.layers import Conv2D, MaxPooling2D
 from tensorflow.keras.layers import BatchNormalization
-from tensorflow.keras.optimizers import RMSprop
+
+# from tensorflow.keras.optimizers import RMSprop
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.metrics import AUC, Precision, Recall
 from tensorflow.keras.callbacks import (
     EarlyStopping,
     ModelCheckpoint,
     LambdaCallback,
     LearningRateScheduler,
+    ReduceLROnPlateau,
 )
 from sklearn.model_selection import train_test_split
 from sklearn.utils import class_weight
@@ -51,17 +54,17 @@ send_telegram_message(
 strategy = tf.distribute.MirroredStrategy()
 print("Número de dispositivos: {}".format(strategy.num_replicas_in_sync))
 send_telegram_message(
-    "Número de dispositivos: {}".format(strategy.num_replicas_in_sync)
+    "[CRATOS] Número de dispositivos: {}".format(strategy.num_replicas_in_sync)
 )
-BATCH_SIZE = 32 * strategy.num_replicas_in_sync
+BATCH_SIZE = 32 * strategy.num_replicas_in_sync  # Tamaño de lote
 
 # ======================== FIN - MIRRORED STRATEGY ========================= #
 
 folder_paths = [
-    "/HDDmedia/srojas/input-data",
-    "/HDDmedia/srojas/output-lsb",
-    "/HDDmedia/srojas/output-dct",
-    "/HDDmedia/srojas/output-dwt",
+    "/HDDmedia/srojas/input-data",  # Hay 510612 imagenes
+    "/HDDmedia/srojas/output-lsb",  # Hay 638265 imagenes
+    "/HDDmedia/srojas/output-dct",  # Hay 638265 imagenes
+    "/HDDmedia/srojas/output-dwt",  # Hay 638265 imagenes
 ]
 
 labels = [0, 1, 1, 1]
@@ -87,6 +90,36 @@ unique_labels, counts = np.unique(all_image_labels, return_counts=True)
 class_weights = (len(all_image_labels) / (len(unique_labels) * counts)).tolist()
 class_weight_dict = dict(zip(unique_labels, class_weights))
 
+train_dataset = tf.data.Dataset.from_tensor_slices((train_paths, train_labels))
+validation_dataset = tf.data.Dataset.from_tensor_slices(
+    (validation_paths, validation_labels)
+)
+
+def load_and_preprocess_image(path, label):
+    image = tf.io.read_file(path)
+    image = tf.image.decode_png(image, channels=3)
+    image = tf.cast(image, tf.float32)
+    image /= 255.0
+    return image, label
+
+train_dataset = (
+    train_dataset.map(
+        load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
+    )
+    .batch(BATCH_SIZE)
+    .shuffle(buffer_size=32)
+    .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+)
+
+validation_dataset = (
+    validation_dataset.map(
+        load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
+    )
+    .batch(BATCH_SIZE)
+    .shuffle(buffer_size=32)
+    .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+)
+
 
 class F1Score(tf.keras.metrics.Metric):
     def __init__(self, name="f1_score", **kwargs):
@@ -108,54 +141,6 @@ class F1Score(tf.keras.metrics.Metric):
         return 2 * ((precision * recall) / (precision + recall + 1e-5))
 
 
-def get_model_summary(model):
-    stream = io.StringIO()
-    sys.stdout = stream
-    model.summary()
-    sys.stdout = sys.__stdout__ 
-    summary_string = stream.getvalue()
-    stream.close()
-    return summary_string
-
-
-def load_and_preprocess_image(path, label):
-    image = tf.io.read_file(path)
-    image = tf.image.decode_png(image, channels=3)
-    image = tf.cast(image, tf.float32)
-    image /= 255.0
-    return image, label
-
-
-def schedule(epoch, lr):
-    if epoch % 10 == 0 and epoch != 0:
-        return lr * 0.5
-    return lr
-
-
-train_dataset = tf.data.Dataset.from_tensor_slices((train_paths, train_labels))
-validation_dataset = tf.data.Dataset.from_tensor_slices(
-    (validation_paths, validation_labels)
-)
-
-train_dataset = (
-    train_dataset.map(
-        load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
-    )
-    .batch(BATCH_SIZE)
-    .shuffle(buffer_size=64)
-    .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-)
-
-validation_dataset = (
-    validation_dataset.map(
-        load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
-    )
-    .batch(BATCH_SIZE)
-    .shuffle(buffer_size=64)
-    .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
-)
-
-
 class EarlyStoppingNotification(tf.keras.callbacks.Callback):
     def __init__(self, early_stopping_callback, telegram_func):
         super().__init__()
@@ -164,16 +149,42 @@ class EarlyStoppingNotification(tf.keras.callbacks.Callback):
 
     def on_epoch_end(self, epoch, logs=None):
         if self.es_callback.stopped_epoch > 0:
-            self.telegram_func(f"EarlyStopping activado en la época: {epoch + 1}.")
+            self.telegram_func(
+                f"[CRATOS] EarlyStopping activado en la época: {epoch + 1}."
+            )
+
+
+def get_model_summary(model):
+    stream = io.StringIO()
+    sys.stdout = stream
+    model.summary()
+    sys.stdout = sys.__stdout__
+    summary_string = stream.getvalue()
+    stream.close()
+    return summary_string
+
+
+def schedule(epoch, lr):
+    if epoch % 10 == 0 and epoch != 0:
+        return lr * 0.5
+    return lr
 
 
 def send_epoch_notification(epoch, logs):
     message = f"[CRATOS] Fin de la época {epoch+1}\n"
     message += f"Pérdida: {logs['loss']:.4f}\n"
     message += f"Precisión: {logs['accuracy']:.4f}\n"
-    if "val_loss" in logs and "val_accuracy" in logs:
+    message += f"AUC: {logs['auc']:.4f}\n"
+    message += f"Precision: {logs['precision']:.4f}\n"
+    message += f"Recall: {logs['recall']:.4f}\n"
+    message += f"F1-Score: {logs['f1_score']:.4f}\n"
+    if "val_loss" in logs:
         message += f"Pérdida de validación: {logs['val_loss']:.4f}\n"
-        message += f"Precisión de validación: {logs['val_accuracy']:.4f}"
+        message += f"Precisión de validación: {logs['val_accuracy']:.4f}\n"
+        message += f"AUC de validación: {logs['val_auc']:.4f}\n"
+        message += f"Precision de validación: {logs['val_precision']:.4f}\n"
+        message += f"Recall de validación: {logs['val_recall']:.4f}\n"
+        message += f"F1-Score de validación: {logs['val_f1_score']:.4f}\n"
     send_telegram_message(message)
 
 
@@ -211,12 +222,10 @@ def plot_training_history(history):
 
 
 def test_best_model():
-    # 1. Cargar el modelo
     loaded_model = tf.keras.models.load_model(
         "/home/srojas/tg2/Stuff/model-best.h5", custom_objects={"F1Score": F1Score}
     )
 
-    # 2. Preparar el conjunto de prueba (test_dataset)
     test_dataset = tf.data.Dataset.from_tensor_slices((test_paths, test_labels))
     test_dataset = (
         test_dataset.map(
@@ -226,10 +235,8 @@ def test_best_model():
         .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
     )
 
-    # 3. Evaluar el modelo
     results = loaded_model.evaluate(test_dataset)
 
-    # 4. Enviar los resultados a Telegram
     message = "[CRATOS] Resultados de la Evaluación en el Conjunto de Prueba:\n"
     for name, value in zip(loaded_model.metrics_names, results):
         message += f"{name}: {value:.4f}\n"
@@ -280,13 +287,30 @@ def main():
                 monitor="val_loss", patience=10, restore_best_weights=True
             )
 
-            model_checkpoint = ModelCheckpoint(
-                "/home/srojas/tg2/Stuff/model-best.h5",
+            script_name = os.path.splitext(os.path.basename(__file__))[0]
+            model_name = f"/home/srojas/tg2/Models/Best_Model_{script_name}.h5"
+
+            class CustomModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
+                def __init__(self, filepath, telegram_func, **kwargs):
+                    super().__init__(filepath, **kwargs)
+                    self.telegram_func = telegram_func
+
+                def on_epoch_end(self, epoch, logs=None):
+                    super().on_epoch_end(epoch, logs)
+                    if self.best == logs.get(self.monitor):
+                        self.telegram_func(
+                            f"[CRATOS] Mejor modelo guardado en la época: {epoch + 1}. Pérdida de validación: {logs.get(self.monitor):.4f}"
+                        )
+
+            model_checkpoint = CustomModelCheckpoint(
+                model_name,
+                telegram_func=send_telegram_message,
                 verbose=1,
                 save_best_only=True,
-                monitor="val_loss",  
-                mode="min", 
+                monitor="val_loss",
+                mode="min",
             )
+
             epoch_notification_callback = LambdaCallback(
                 on_epoch_end=lambda epoch, logs: send_epoch_notification(epoch, logs)
             )
@@ -294,17 +318,22 @@ def main():
                 early_stopping_callback=early_stopping,
                 telegram_func=send_telegram_message,
             )
-            lr_scheduler = LearningRateScheduler(schedule)
+            # lr_scheduler = LearningRateScheduler(schedule)
+
+            reduce_lr = ReduceLROnPlateau(
+                monitor="val_loss", factor=0.2, patience=5, min_lr=0.0001
+            )
 
             callbacks = [
                 early_stopping,
                 model_checkpoint,
                 epoch_notification_callback,
-                lr_scheduler,
+                # lr_scheduler,
+                reduce_lr,
                 early_stopping_notification,
             ]
 
-            optimizer = RMSprop(learning_rate=0.001)
+            optimizer = Adam(learning_rate=0.001)
 
             model.compile(
                 loss="binary_crossentropy",
@@ -319,7 +348,7 @@ def main():
             )
 
             model_summary = get_model_summary(model)
-            send_telegram_message(f"Model Summary:\n{model_summary}")
+            send_telegram_message(f"[CRATOS] Model Summary:\n{model_summary}")
 
             model.summary()
 
@@ -336,7 +365,9 @@ def main():
             test_best_model()
         except Exception as e:
             error_message = str(e) + "\n\n" + traceback.format_exc()
-            send_telegram_message(f"Error durante el entrenamiento:\n{error_message}")
+            send_telegram_message(
+                f"[CRATOS] Error durante el entrenamiento:\n{error_message}"
+            )
             print(f"Error durante el entrenamiento:\n{error_message}")
 
     send_telegram_message(
