@@ -4,6 +4,7 @@ import sys
 import requests
 import configparser
 import traceback
+import numpy as np
 import tensorflow as tf
 from tensorflow.keras.models import Sequential
 from tensorflow.keras.layers import Dense, Dropout, Flatten
@@ -18,6 +19,7 @@ from tensorflow.keras.callbacks import (
     LearningRateScheduler,
 )
 from sklearn.model_selection import train_test_split
+from sklearn.utils import class_weight
 import matplotlib.pyplot as plt
 
 # ======================== INICIO - TELEGRAM ========================= #
@@ -38,6 +40,12 @@ def send_telegram_message(message):
 
 # ======================== FIN - TELEGRAM ========================= #
 
+send_telegram_message(
+    "[CRATOS] Tu programa {} ha empezado de ejecutarse.".format(
+        os.path.basename(__file__)
+    )
+)
+
 # ======================== INICIO - MIRRORED STRATEGY ========================= #
 
 strategy = tf.distribute.MirroredStrategy()
@@ -45,7 +53,7 @@ print("Número de dispositivos: {}".format(strategy.num_replicas_in_sync))
 send_telegram_message(
     "Número de dispositivos: {}".format(strategy.num_replicas_in_sync)
 )
-BATCH_SIZE = 32 * strategy.num_replicas_in_sync  # Ajustando el tamaño de lote
+BATCH_SIZE = 32 * strategy.num_replicas_in_sync
 
 # ======================== FIN - MIRRORED STRATEGY ========================= #
 
@@ -66,9 +74,18 @@ for folder_path, label in zip(folder_paths, labels):
         all_image_paths.append(full_path)
         all_image_labels.append(label)
 
-train_paths, validation_paths, train_labels, validation_labels = train_test_split(
-    all_image_paths, all_image_labels, test_size=0.2, random_state=42
+# División de los datos en entrenamiento, validación y pruebas
+train_paths, temp_paths, train_labels, temp_labels = train_test_split(
+    all_image_paths, all_image_labels, test_size=0.3, random_state=42
 )
+
+validation_paths, test_paths, validation_labels, test_labels = train_test_split(
+    temp_paths, temp_labels, test_size=0.5, random_state=42
+)
+
+unique_labels, counts = np.unique(all_image_labels, return_counts=True)
+class_weights = (len(all_image_labels) / (len(unique_labels) * counts)).tolist()
+class_weight_dict = dict(zip(unique_labels, class_weights))
 
 
 class F1Score(tf.keras.metrics.Metric):
@@ -95,7 +112,7 @@ def get_model_summary(model):
     stream = io.StringIO()
     sys.stdout = stream
     model.summary()
-    sys.stdout = sys.__stdout__  # Reset la salida estándar al valor por defecto
+    sys.stdout = sys.__stdout__ 
     summary_string = stream.getvalue()
     stream.close()
     return summary_string
@@ -125,7 +142,7 @@ train_dataset = (
         load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
     )
     .batch(BATCH_SIZE)
-    .shuffle(buffer_size=32)
+    .shuffle(buffer_size=64)
     .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 )
 
@@ -134,7 +151,7 @@ validation_dataset = (
         load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
     )
     .batch(BATCH_SIZE)
-    .shuffle(buffer_size=32)
+    .shuffle(buffer_size=64)
     .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
 )
 
@@ -193,13 +210,33 @@ def plot_training_history(history):
     # plt.show()
 
 
-def main():
-    send_telegram_message(
-        "[CRATOS] Tu programa {} ha empezado de ejecutarse.".format(
-            os.path.basename(__file__)
-        )
+def test_best_model():
+    # 1. Cargar el modelo
+    loaded_model = tf.keras.models.load_model(
+        "/home/srojas/tg2/Stuff/model-best.h5", custom_objects={"F1Score": F1Score}
     )
 
+    # 2. Preparar el conjunto de prueba (test_dataset)
+    test_dataset = tf.data.Dataset.from_tensor_slices((test_paths, test_labels))
+    test_dataset = (
+        test_dataset.map(
+            load_and_preprocess_image, num_parallel_calls=tf.data.experimental.AUTOTUNE
+        )
+        .batch(BATCH_SIZE)
+        .prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
+    )
+
+    # 3. Evaluar el modelo
+    results = loaded_model.evaluate(test_dataset)
+
+    # 4. Enviar los resultados a Telegram
+    message = "[CRATOS] Resultados de la Evaluación en el Conjunto de Prueba:\n"
+    for name, value in zip(loaded_model.metrics_names, results):
+        message += f"{name}: {value:.4f}\n"
+    send_telegram_message(message)
+
+
+def main():
     with strategy.scope():
         try:
             model = Sequential()
@@ -247,7 +284,8 @@ def main():
                 "/home/srojas/tg2/Stuff/model-best.h5",
                 verbose=1,
                 save_best_only=True,
-                save_weights_only=True,
+                monitor="val_loss",  
+                mode="min", 
             )
             epoch_notification_callback = LambdaCallback(
                 on_epoch_end=lambda epoch, logs: send_epoch_notification(epoch, logs)
@@ -291,9 +329,11 @@ def main():
                 epochs=20,
                 callbacks=callbacks,
                 verbose=1,
+                class_weight=class_weight_dict,
             )
 
             plot_training_history(history)
+            test_best_model()
         except Exception as e:
             error_message = str(e) + "\n\n" + traceback.format_exc()
             send_telegram_message(f"Error durante el entrenamiento:\n{error_message}")
