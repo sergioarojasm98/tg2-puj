@@ -1,6 +1,7 @@
 import os
 import io
 import sys
+import random
 import requests
 import configparser
 import traceback
@@ -71,11 +72,22 @@ labels = [0, 1, 1, 1]
 all_image_paths = []
 all_image_labels = []
 
+sample_size = len(os.listdir(folder_paths[0])) // 3
+
 for folder_path, label in zip(folder_paths, labels):
-    for image_file in os.listdir(folder_path):
-        full_path = os.path.join(folder_path, image_file)
-        all_image_paths.append(full_path)
-        all_image_labels.append(label)
+    if label == 0:
+        # Si es la clase 0 (input-data), simplemente añadimos todas las imágenes
+        for image_file in os.listdir(folder_path):
+            full_path = os.path.join(folder_path, image_file)
+            all_image_paths.append(full_path)
+            all_image_labels.append(label)
+    else:
+        # Si es clase 1 (output-lsb, output-dct o output-dwt), tomamos una muestra aleatoria
+        image_files_sample = random.sample(os.listdir(folder_path), sample_size)
+        for image_file in image_files_sample:
+            full_path = os.path.join(folder_path, image_file)
+            all_image_paths.append(full_path)
+            all_image_labels.append(label)
 
 # División de los datos en entrenamiento, validación y pruebas
 train_paths, temp_paths, train_labels, temp_labels = train_test_split(
@@ -248,12 +260,15 @@ def plot_confusion_matrix(cm, classes):
     # plt.show()
 
     send_telegram_message(f"[CRATOS] Tu matriz de confusión se guardó en {file_path}")
-    
+
+
 def test_best_model():
     script_name = os.path.splitext(os.path.basename(__file__))[0]
     base_path = "/home/srojas/tg2/Models"
     model_path = os.path.join(base_path, f"Best_Model_{script_name}.h5")
-    loaded_model = tf.keras.models.load_model(model_path, custom_objects={"F1Score": F1Score})
+    loaded_model = tf.keras.models.load_model(
+        model_path, custom_objects={"F1Score": F1Score}
+    )
 
     test_dataset = tf.data.Dataset.from_tensor_slices((test_paths, test_labels))
     test_dataset = (
@@ -280,125 +295,125 @@ def test_best_model():
 def main():
     with strategy.scope():
         try:
-    #         model = Sequential()
+            model = Sequential()
 
-    #         # Primera capa convolucional
-    #         model.add(
-    #             Conv2D(
-    #                 32, kernel_size=(3, 3), activation="relu", input_shape=(360, 480, 3)
-    #             )
-    #         )
-    #         model.add(BatchNormalization())
-    #         model.add(MaxPooling2D(pool_size=(2, 2)))
-    #         model.add(Dropout(0.25))
+            # Primera capa convolucional
+            model.add(
+                Conv2D(
+                    32, kernel_size=(3, 3), activation="relu", input_shape=(360, 480, 3)
+                )
+            )
+            model.add(BatchNormalization())
+            model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Dropout(0.25))
 
-    #         # Segunda capa convolucional
-    #         model.add(Conv2D(64, kernel_size=(3, 3), activation="relu"))
-    #         model.add(BatchNormalization())
-    #         model.add(MaxPooling2D(pool_size=(2, 2)))
-    #         model.add(Dropout(0.25))
+            # Segunda capa convolucional
+            model.add(Conv2D(64, kernel_size=(3, 3), activation="relu"))
+            model.add(BatchNormalization())
+            model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Dropout(0.25))
 
-    #         # Tercera capa convolucional
-    #         model.add(Conv2D(128, kernel_size=(3, 3), activation="relu"))
-    #         model.add(BatchNormalization())
-    #         model.add(MaxPooling2D(pool_size=(2, 2)))
-    #         model.add(Dropout(0.25))
+            # Tercera capa convolucional
+            model.add(Conv2D(128, kernel_size=(3, 3), activation="relu"))
+            model.add(BatchNormalization())
+            model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Dropout(0.25))
 
-    #         # Cuarta capa convolucional
-    #         model.add(Conv2D(256, kernel_size=(3, 3), activation="relu"))
-    #         model.add(BatchNormalization())
-    #         model.add(MaxPooling2D(pool_size=(2, 2)))
-    #         model.add(Dropout(0.25))
+            # Cuarta capa convolucional
+            model.add(Conv2D(256, kernel_size=(3, 3), activation="relu"))
+            model.add(BatchNormalization())
+            model.add(MaxPooling2D(pool_size=(2, 2)))
+            model.add(Dropout(0.25))
 
-    #         # Capas completamente conectadas
-    #         model.add(Flatten())
-    #         model.add(Dense(512, activation="relu"))
-    #         model.add(BatchNormalization())
-    #         model.add(Dropout(0.5))
-    #         model.add(Dense(1, activation="sigmoid"))
+            # Capas completamente conectadas
+            model.add(Flatten())
+            model.add(Dense(512, activation="relu"))
+            model.add(BatchNormalization())
+            model.add(Dropout(0.5))
+            model.add(Dense(1, activation="sigmoid"))
 
-    #         early_stopping = EarlyStopping(
-    #             monitor="val_loss", patience=7, restore_best_weights=True
-    #         )
+            early_stopping = EarlyStopping(
+                monitor="val_loss", patience=7, restore_best_weights=True
+            )
 
-    #         script_name = os.path.splitext(os.path.basename(__file__))[0]
-    #         model_name = f"/home/srojas/tg2/Models/Best_Model_{script_name}.h5"
+            script_name = os.path.splitext(os.path.basename(__file__))[0]
+            model_name = f"/home/srojas/tg2/Models/Best_Model_{script_name}.h5"
 
-    #         class CustomModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
-    #             def __init__(self, filepath, telegram_func, **kwargs):
-    #                 super().__init__(filepath, **kwargs)
-    #                 self.telegram_func = telegram_func
+            class CustomModelCheckpoint(tf.keras.callbacks.ModelCheckpoint):
+                def __init__(self, filepath, telegram_func, **kwargs):
+                    super().__init__(filepath, **kwargs)
+                    self.telegram_func = telegram_func
 
-    #             def on_epoch_end(self, epoch, logs=None):
-    #                 super().on_epoch_end(epoch, logs)
-    #                 if self.best == logs.get(self.monitor):
-    #                     self.telegram_func(
-    #                         f"[CRATOS] Mejor modelo guardado en la época: {epoch + 1}. Pérdida de validación: {logs.get(self.monitor):.4f}"
-    #                     )
+                def on_epoch_end(self, epoch, logs=None):
+                    super().on_epoch_end(epoch, logs)
+                    if self.best == logs.get(self.monitor):
+                        self.telegram_func(
+                            f"[CRATOS] Mejor modelo guardado en la época: {epoch + 1}. Pérdida de validación: {logs.get(self.monitor):.4f}"
+                        )
 
-    #         model_checkpoint = CustomModelCheckpoint(
-    #             model_name,
-    #             telegram_func=send_telegram_message,
-    #             verbose=1,
-    #             save_best_only=True,
-    #             monitor="val_loss",
-    #             mode="min",
-    #         )
+            model_checkpoint = CustomModelCheckpoint(
+                model_name,
+                telegram_func=send_telegram_message,
+                verbose=1,
+                save_best_only=True,
+                monitor="val_loss",
+                mode="min",
+            )
 
-    #         epoch_notification_callback = LambdaCallback(
-    #             on_epoch_end=lambda epoch, logs: send_epoch_notification(epoch, logs)
-    #         )
-    #         early_stopping_notification = EarlyStoppingNotification(
-    #             early_stopping_callback=early_stopping,
-    #             telegram_func=send_telegram_message,
-    #         )
+            epoch_notification_callback = LambdaCallback(
+                on_epoch_end=lambda epoch, logs: send_epoch_notification(epoch, logs)
+            )
+            early_stopping_notification = EarlyStoppingNotification(
+                early_stopping_callback=early_stopping,
+                telegram_func=send_telegram_message,
+            )
 
-    #         reduce_lr = ReduceLROnPlateau(
-    #             monitor="val_loss", factor=0.5, patience=3, min_lr=0.0001
-    #         )
+            reduce_lr = ReduceLROnPlateau(
+                monitor="val_loss", factor=0.5, patience=3, min_lr=0.0001
+            )
 
-    #         callbacks = [
-    #             early_stopping,
-    #             model_checkpoint,
-    #             epoch_notification_callback,
-    #             reduce_lr,
-    #             early_stopping_notification,
-    #         ]
+            callbacks = [
+                early_stopping,
+                model_checkpoint,
+                epoch_notification_callback,
+                reduce_lr,
+                early_stopping_notification,
+            ]
 
-    #         optimizer = Adam(learning_rate=0.001)
+            optimizer = Adam(learning_rate=0.001)
 
-    #         model.compile(
-    #             loss="binary_crossentropy",
-    #             optimizer=optimizer,
-    #             metrics=[
-    #                 "accuracy",
-    #                 AUC(name="auc"),
-    #                 Precision(name="precision"),
-    #                 Recall(name="recall"),
-    #                 F1Score(name="f1_score"),
-    #                 tfa.metrics.MatthewsCorrelationCoefficient(
-    #                     num_classes=2, name="mcc"
-    #                 ),
-    #             ],
-    #         )
+            model.compile(
+                loss="binary_crossentropy",
+                optimizer=optimizer,
+                metrics=[
+                    "accuracy",
+                    AUC(name="auc"),
+                    Precision(name="precision"),
+                    Recall(name="recall"),
+                    F1Score(name="f1_score"),
+                    tfa.metrics.MatthewsCorrelationCoefficient(
+                        num_classes=2, name="mcc"
+                    ),
+                ],
+            )
 
-    #         model_summary = get_model_summary(model)
-    #         send_telegram_message(f"[CRATOS] Model Summary:\n{model_summary}")
+            model_summary = get_model_summary(model)
+            send_telegram_message(f"[CRATOS] Model Summary:\n{model_summary}")
 
-    #         model.summary()
+            model.summary()
 
-    #         history = model.fit(
-    #             train_dataset,
-    #             validation_data=validation_dataset,
-    #             epochs=20,
-    #             callbacks=callbacks,
-    #             verbose=1,
-    #             class_weight=class_weight_dict,
-    #         )
+            history = model.fit(
+                train_dataset,
+                validation_data=validation_dataset,
+                epochs=20,
+                callbacks=callbacks,
+                verbose=1,
+                class_weight=class_weight_dict,
+            )
 
-    #         plot_training_history(history)
+            plot_training_history(history)
             test_best_model()
-            
+
         except Exception as e:
             error_message = str(e) + "\n\n" + traceback.format_exc()
             send_telegram_message(
