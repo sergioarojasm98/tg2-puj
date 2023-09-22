@@ -45,10 +45,10 @@ BATCH_SIZE = 32 * strategy.num_replicas_in_sync  # Ajustando el tamaño de lote
 # ======================== FIN - MIRRORED STRATEGY ========================= #
 
 folder_paths = [
-    "/data/estudiantes/srojas/input-data-test",
-    "/data/estudiantes/srojas/output-lsb-test",
-    "/data/estudiantes/srojas/output-dct-test",
-    "/data/estudiantes/srojas/output-dwt-test",
+    "/data/estudiantes/srojas/input-data",
+    "/data/estudiantes/srojas/output-lsb",
+    "/data/estudiantes/srojas/output-dct",
+    "/data/estudiantes/srojas/output-dwt",
 ]
 
 labels = [0, 1, 1, 1]
