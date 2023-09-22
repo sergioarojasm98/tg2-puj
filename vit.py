@@ -11,6 +11,7 @@ import torchmetrics
 from pytorch_lightning.callbacks import ModelCheckpoint
 
 # 1. Preparación de los datos.
+print("Iniciando etapa de preparación de datos...")
 folder_paths = [
     "/HDDmedia/srojas/input-data",
     "/HDDmedia/srojas/output-lsb",
@@ -30,6 +31,7 @@ for folder_path, label in zip(folder_paths, labels):
             all_image_labels.append(label)
         except Exception as e:
             print(f"Error al abrir la imagen: {full_path}. Error: {e}")
+    print(f"Carpeta {folder_path} procesada.")
 
 
 train_paths, temp_paths, train_labels, temp_labels = train_test_split(
@@ -77,6 +79,7 @@ class SteganographyClassifier(pl.LightningModule):
         return loss
 
     def validation_step(self, batch, batch_idx):
+        print("Iniciando etapa de validación...")
         x, y = batch
         logits = self(x)
         loss = self._shared_evaluation(logits, y, prefix="val_")
@@ -84,12 +87,15 @@ class SteganographyClassifier(pl.LightningModule):
         # Registra la tasa de aprendizaje actual
         lr = self.trainer.optimizers[0].param_groups[0]["lr"]
         self.log("lr", lr)
+        print("Etapa de validación completada.")
         return {"loss": loss}
 
     def test_step(self, batch, batch_idx):
+        print("Iniciando etapa de prueba...")
         x, y = batch
         logits = self(x)
         loss = self._shared_evaluation(logits, y, prefix="test_")
+        print("Etapa de prueba completada.")
         return {"loss": loss}
 
     def on_epoch_start(self):
@@ -108,6 +114,13 @@ class SteganographyClassifier(pl.LightningModule):
             self.batch_count = 0
         return loss
 
+    def training_epoch_end(self, training_step_outputs):
+        # Si quedan batches por registrar después de terminar la época:
+        if self.batch_count > 0:
+            self.log("avg_train_accuracy", self.avg_train_acc / self.batch_count)
+            self.avg_train_acc = torch.tensor(0.0, device=self.device)
+            self.batch_count = 0
+
     def configure_optimizers(self):
         optimizer = torch.optim.Adam(self.parameters(), lr=self.learning_rate)
 
@@ -120,7 +133,6 @@ class SteganographyClassifier(pl.LightningModule):
         }
 
         return {"optimizer": optimizer, "lr_scheduler": scheduler}
-
 
 
 # 3. Definición del módulo de datos.
@@ -188,6 +200,7 @@ class SteganographyDataModule(pl.LightningDataModule):
 
 # 4. Entrenamiento y validación del modelo.
 def main():
+    print("Inicializando modelo y módulo de datos...")
     model = SteganographyClassifier()
     dm = SteganographyDataModule(
         train_paths,
@@ -215,18 +228,25 @@ def main():
         max_epochs=5,
         gpus=5,  # Número de GPUs
         strategy="dp",  # Entrenamiento en paralelo de datos
-        precision=16,
+        precision=32,
         accelerator="gpu",
         callbacks=[checkpoint_callback],
+        progress_bar_refresh_rate=20,
     )
 
-    trainer.fit(model, dm)
+    print("Modelo y módulo de datos inicializados.")
 
+    print("Comenzando entrenamiento...")
+    trainer.fit(model, dm)
+    print("Entrenamiento completado.")
+
+    print("Cargando el mejor modelo guardado...")
     loaded_model = SteganographyClassifier.load_from_checkpoint(
         checkpoint_path=model_path
     )
-
+    print("Comenzando pruebas con el modelo cargado...")
     trainer.test(loaded_model, datamodule=dm)
+    print("Pruebas completadas.")
 
 
 if __name__ == "__main__":
